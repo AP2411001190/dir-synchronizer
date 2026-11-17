@@ -1,0 +1,205 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,columns=fullflexible}
+\hypersetup{colorlinks=true,urlcolor=blue,linkcolor=black}
+\setlength{\parskip}{0.6em}
+
+\title{\textbf{Repository / Directory Synchronizer}\\[4pt]
+\large A Client--Server Application for Synchronizing a Local Folder with a Remote Folder}
+\author{CSE 302 -- Operating Systems, Section N\\
+Group 7, Project ID 4\\[4pt]
+V.~Preetham (AP24110010605), K.~Aadarsh (AP24110010702),\\
+A.~Akhil (AP24110010633), M.~Jathin (AP24110010131),\\
+M.~Sasikanth (AP24110010551), T.~Jaideep (AP24110011909)\\[4pt]
+SRM University-AP}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Keeping the same set of files on two machines is a common need, and tools such as Dropbox and \texttt{rsync} solve it. This project implements a small version of such a tool: a client--server application that watches a local directory and synchronizes every change to a remote directory. The client detects file creation, modification, and deletion, hashes file contents with SHA-256 to avoid sending unchanged data, and sends changes to the server over TCP. The server uses a thread pool, and a mutex protects its shared index. The project uses core operating system concepts: threads, mutual exclusion, the producer--consumer pattern, inter-process communication through sockets, and file system metadata. The source code is available on GitHub and a web-based simulation of the algorithm is hosted on GitHub Pages.
+\end{abstract}
+
+\section{Introduction}
+A user who works on files on one computer often needs a copy of them on another. Copying files by hand is slow and error-prone, and copying everything every time wastes bandwidth. A synchronizer solves this by detecting what changed and transferring only that.
+
+The goal of this project is to build a client--server synchronizer that copies local changes to a remote folder, as the Dropbox desktop client does. The project also serves as a practical exercise in operating system concepts that appear in the CSE 302 syllabus.
+
+\subsection{Problem Statement}
+Design and implement a client--server application that synchronizes changes made in a local folder to a remote folder, and that handles several simultaneous requests safely.
+
+\subsection{Objectives}
+\begin{itemize}
+\item Detect file creation, modification, and deletion in a local directory automatically.
+\item Transfer only files whose content has changed.
+\item Serve multiple connections at the same time without corrupting shared state.
+\item Recover from network failures by retrying.
+\item Reject unsafe requests such as path traversal.
+\end{itemize}
+
+\section{Related Work}
+\textbf{Dropbox} keeps a local folder and a cloud folder consistent, uploads changes in the background, and keeps copies of conflicting versions.\
+\textbf{rsync} compares files between two locations and transfers only the differences, using rolling checksums to find the changed parts of a file.\
+\textbf{Git} identifies content by hash, which is the same idea this project uses to decide whether a file has changed.
+
+Our project is much smaller than these systems. It keeps the central ideas (change detection, hashing, background transfer) and leaves out features such as delta encoding and user accounts.
+
+\section{System Architecture}
+The system has two programs. The client runs next to the folder being watched, and the server stores the remote copy.
+
+\begin{figure}[h]
+\centering
+\begin{lstlisting}
+ CLIENT                                      SERVER
+ +-----------+  event  +---------+   TCP    +--------------+
+ | Watcher   | ------> |  Queue  | -------> | Thread pool  |
+ | (producer)|         | (blocks)|          | (8 workers)  |
+ +-----------+         +----+----+          +------+-------+
+                            | consumer             | mutex
+                       +----v-----+         +------v-------+
+                       | Uploader |         | Index + files|
+                       | SHA-256  |         | remote_store |
+                       +----------+         +--------------+
+\end{lstlisting}
+\caption{Architecture of the synchronizer.}
+\end{figure}
+
+\subsection{Client}
+The client has three parts:
+\begin{enumerate}
+\item A \textbf{watcher thread} (the \texttt{watchdog} library) that receives file system events and puts them on a queue.
+\item A \textbf{blocking queue} that connects the watcher to the uploader.
+\item An \textbf{uploader thread} that takes events from the queue, computes a SHA-256 hash, and sends the file to the server if the hash differs from the last synchronized one.
+\end{enumerate}
+When the client starts, it also walks the whole directory and queues every file, so that files created while the client was off are synchronized.
+
+\subsection{Server}
+The server accepts TCP connections on port 9000 and passes each connection to a worker in a thread pool of eight threads. A worker reads a one-line JSON header (operation, path, size), then the file contents, and updates the remote folder and the in-memory index.
+
+\subsection{Protocol}
+Each request starts with one line of JSON, for example \texttt{\{"op":"put","path":"a/b.txt","size":120\}}, followed by \texttt{size} bytes of file data. The operations are \texttt{put} and \texttt{delete}. The server replies with \texttt{OK}, or \texttt{ERR} if the request was rejected.
+
+\section{Operating System Concepts Used}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}p{3.6cm}p{11cm}@{}}
+\toprule
+\textbf{Concept} & \textbf{How it is used}\\
+\midrule
+Threads & The client runs a watcher thread and an uploader thread. The server runs a pool of worker threads, so one slow transfer does not block the others.\\
+Mutual exclusion & Several workers update the shared index and write files at once. A mutex makes each update atomic and prevents a race condition.\\
+Producer--consumer & The watcher produces events and the uploader consumes them. The queue blocks when empty, so the uploader does not busy-wait and wastes no CPU.\\
+Inter-process communication & Client and server are separate processes that communicate through TCP sockets.\\
+File system & The client traverses directories and reads files. The server validates paths and creates directories as needed.\\
+\bottomrule
+\end{tabular}
+\caption{Mapping of OS concepts to the implementation.}
+\end{table}
+
+\section{Algorithms}
+\subsection{Change Detection by Hashing}
+A file's modification time can change without its content changing, for example when an editor saves the same text. The client therefore compares SHA-256 hashes.
+
+\begin{lstlisting}
+function process(event):
+    if event is delete:
+        remove path from synced; send DELETE
+    else:
+        h = SHA256(read(path))
+        if synced[path] == h: return      // unchanged
+        synced[path] = h; send PUT(path, data)
+\end{lstlisting}
+
+\subsection{Producer--Consumer Queue}
+\begin{lstlisting}
+watcher:   on event e:  queue.put(e)
+uploader:  loop: e = queue.get()   // blocks while empty
+                 process(e)
+\end{lstlisting}
+
+\subsection{Retry with Exponential Backoff}
+If a send fails, the uploader waits $2^{k}$ seconds before attempt $k+1$, for up to five attempts. This handles a server that is temporarily down without flooding it with requests.
+
+\subsection{Conflict Resolution}
+A conflict occurs when the same file is changed on both sides between two synchronizations. The web simulation demonstrates the policy: both versions are kept, and the second one is saved under the name \texttt{name (conflict).ext}. No data is lost, and the user decides which version to keep.
+
+\subsection{Path Validation}
+The server normalizes every received path and rejects paths that start with \texttt{..} or are absolute, which prevents a client from writing outside the remote folder.
+
+\section{Implementation}
+The project is written in Python 3. The server uses the \texttt{socket}, \texttt{threading}, and \texttt{concurrent.futures} modules. The client uses \texttt{watchdog} for file system events, \texttt{queue.Queue} for the blocking queue, and \texttt{hashlib} for SHA-256.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{File} & \textbf{Purpose}\\
+\midrule
+\texttt{src/server.py} & Threaded TCP server, index, storage\\
+\texttt{src/client.py} & Watcher, queue, uploader, retry\\
+\texttt{docs/index.html} & Web simulation hosted on GitHub Pages\\
+\texttt{report/main.tex} & This report\\
+\bottomrule
+\end{tabular}
+\caption{Repository contents.}
+\end{table}
+
+To run the system: start the server with \texttt{python src/server.py}, then start the client with \texttt{python src/client.py ./my\_folder}.
+
+\section{Testing and Results}
+Each test was run with the server and client on the same machine. The \emph{Result} column records what was observed (Pass or Fail).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}p{0.4cm}p{4.2cm}p{6.4cm}p{1.6cm}@{}}
+\toprule
+\textbf{\#} & \textbf{Test} & \textbf{Expected behaviour} & \textbf{Result}\\
+\midrule
+1 & Create a new file & File appears in \texttt{remote\_store} & \_\_\_\\
+2 & Modify a file & Remote file has the new content & \_\_\_\\
+3 & Delete a file & File is removed from \texttt{remote\_store} & \_\_\_\\
+4 & Save a file without changes & No upload happens (hash matches) & \_\_\_\\
+5 & Stop the server, change a file, restart the server & Client retries and the change arrives & \_\_\_\\
+6 & Request path \texttt{../x} & Server replies \texttt{ERR}, nothing is written & \_\_\_\\
+\bottomrule
+\end{tabular}
+\caption{Test cases.}
+\end{table}
+
+% Add screenshots of the two terminals and the two folders here:
+% \begin{figure}[h]\centering
+% \includegraphics[width=0.9\textwidth]{screenshot1.png}
+% \caption{Client and server output during a sync.}\end{figure}
+
+\section{Limitations and Future Work}
+\begin{itemize}
+\item Synchronization is one-way (local to remote). A pull from remote to local would make it bidirectional.
+\item Whole files are sent. Splitting files into chunks and sending only changed chunks would save bandwidth on large files.
+\item The index is in memory, so it is lost when the server restarts.
+\item There is no encryption or authentication.
+\item File renames are seen as a delete followed by a create.
+\end{itemize}
+
+\section{Conclusion}
+The project delivers a working client--server synchronizer that detects local changes, avoids sending unchanged files, and serves requests with a thread pool protected by a mutex. It shows how threads, mutual exclusion, the producer--consumer pattern, and sockets work together in a real application. The source code and the web simulation are linked below.
+
+\section*{Links}
+GitHub repository: \url{https://github.com/AP2411001190/dir-synchronizer}\\
+Web app: \url{https://ap2411001190.github.io/dir-synchronizer/}
+
+\begin{thebibliography}{9}
+\bibitem{osc} A.~Silberschatz, P.~B.~Galvin, G.~Gagne, \emph{Operating System Concepts}, Wiley.
+\bibitem{rsync} A.~Tridgell, P.~Mackerras, ``The rsync algorithm,'' Australian National University, 1996.
+\bibitem{dropbox} Dropbox Developers, \url{https://www.dropbox.com/developers}.
+\bibitem{watchdog} \texttt{watchdog} Python library, \url{https://pypi.org/project/watchdog/}.
+\bibitem{py} Python Software Foundation, Python documentation: \texttt{socket}, \texttt{threading}, \texttt{hashlib}, \texttt{queue}.
+\end{thebibliography}
+
+\end{document}
