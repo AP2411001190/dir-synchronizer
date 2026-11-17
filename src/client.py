@@ -13,20 +13,22 @@ class Handler(FileSystemEventHandler):
         if not e.is_directory: q.put(("put", e.src_path))
     def on_deleted(self, e):
         if not e.is_directory: q.put(("delete", e.src_path))
+    def on_moved(self, e):
+        if not e.is_directory:
+            q.put(("delete", e.src_path)); q.put(("put", e.dest_path))
 
 def send(op, abspath):
     rel = os.path.relpath(abspath, SRC).replace("\\", "/")
-    data = b""
+    data = b""; h = None
     if op == "put":
         with open(abspath, "rb") as f: data = f.read()
         h = hashlib.sha256(data).hexdigest()
         if synced.get(rel) == h: return          # unchanged, skip
-        synced[rel] = h
-    else:
-        synced.pop(rel, None)
     with socket.create_connection((HOST, PORT)) as s:
         s.sendall(json.dumps({"op": op, "path": rel, "size": len(data)}).encode() + b"\n")
         s.sendall(data); s.recv(10)
+    if op == "put": synced[rel] = h              # record only after success
+    else: synced.pop(rel, None)
     print(op, rel)
 
 def uploader():
