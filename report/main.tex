@@ -1,6 +1,7 @@
 \documentclass[12pt,a4paper]{article}
 \usepackage[margin=1in]{geometry}
 \usepackage{graphicx}
+\usepackage{float}
 \usepackage{listings}
 \usepackage{booktabs}
 \usepackage{array}
@@ -45,8 +46,8 @@ Design and implement a client--server application that synchronizes changes made
 \end{itemize}
 
 \section{Related Work}
-\textbf{Dropbox} keeps a local folder and a cloud folder consistent, uploads changes in the background, and keeps copies of conflicting versions.\
-\textbf{rsync} compares files between two locations and transfers only the differences, using rolling checksums to find the changed parts of a file.\
+\textbf{Dropbox} keeps a local folder and a cloud folder consistent, uploads changes in the background, and keeps copies of conflicting versions.\\
+\textbf{rsync} compares files between two locations and transfers only the differences, using rolling checksums to find the changed parts of a file.\\
 \textbf{Git} identifies content by hash, which is the same idea this project uses to decide whether a file has changed.
 
 Our project is much smaller than these systems. It keeps the central ideas (change detection, hashing, background transfer) and leaves out features such as delta encoding and user accounts.
@@ -87,9 +88,9 @@ The server accepts TCP connections on port 9000 and passes each connection to a 
 Each request starts with one line of JSON, for example \texttt{\{"op":"put","path":"a/b.txt","size":120\}}, followed by \texttt{size} bytes of file data. The operations are \texttt{put} and \texttt{delete}. The server replies with \texttt{OK}, or \texttt{ERR} if the request was rejected.
 
 \section{Operating System Concepts Used}
-\begin{table}[h]
+\begin{table}[H]
 \centering
-\begin{tabular}{@{}p{3.6cm}p{11cm}@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{4.4cm}>{\raggedright\arraybackslash}p{10.6cm}@{}}
 \toprule
 \textbf{Concept} & \textbf{How it is used}\\
 \midrule
@@ -158,25 +159,56 @@ Each test was run with the server and client on the same machine. The \emph{Resu
 
 \begin{table}[h]
 \centering
-\begin{tabular}{@{}p{0.4cm}p{4.2cm}p{6.4cm}p{1.6cm}@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.5cm}>{\raggedright\arraybackslash}p{4.2cm}>{\raggedright\arraybackslash}p{5.8cm}>{\raggedright\arraybackslash}p{3.2cm}@{}}
 \toprule
 \textbf{\#} & \textbf{Test} & \textbf{Expected behaviour} & \textbf{Result}\\
 \midrule
-1 & Create a new file & File appears in \texttt{remote\_store} & \_\_\_\\
-2 & Modify a file & Remote file has the new content & \_\_\_\\
-3 & Delete a file & File is removed from \texttt{remote\_store} & \_\_\_\\
-4 & Save a file without changes & No upload happens (hash matches) & \_\_\_\\
-5 & Stop the server, change a file, restart the server & Client retries and the change arrives & \_\_\_\\
-6 & Request path \texttt{../x} & Server replies \texttt{ERR}, nothing is written & \_\_\_\\
+1 & Create a new file & File appears in \texttt{remote\_store} & Pass\\
+2 & Modify a file & Remote file has the new content & Pass\\
+3 & Delete a file & File is removed from \texttt{remote\_store} & Pass\\
+4 & Save a file without changes & No upload happens (hash matches) & Pass\\
+5 & Stop the server, change a file, restart the server & Client retries and the change arrives & Pass\\
+6 & Request path \texttt{../x} & Server replies \texttt{ERR}, nothing is written & Pass (ERR returned)\\
 \bottomrule
 \end{tabular}
 \caption{Test cases.}
 \end{table}
 
-% Add screenshots of the two terminals and the two folders here:
-% \begin{figure}[h]\centering
-% \includegraphics[width=0.9\textwidth]{screenshot1.png}
-% \caption{Client and server output during a sync.}\end{figure}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{tests-1-3.png.png}
+\caption{Creating and deleting a file: the client sends \texttt{put} and \texttt{delete}, and the server confirms (tests 1 and 3).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{test-2.png.png}
+\caption{Modifying a file triggers a second upload (test 2).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{test-4.png.png}
+\caption{Saving a file without changes triggers no upload (test 4).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{test-5.png.png}
+\caption{The client retries while the server is down, then the change arrives (test 5).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{test-6.png.png}
+\caption{A request for \texttt{../x.txt} is rejected with \texttt{ERR} and no file is written (test 6).}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{folders.png.png}
+\caption{Local folder (\texttt{my\_folder}) and remote folder (\texttt{remote\_store}) after synchronization.}
+\end{figure}
 
 \section{Limitations and Future Work}
 \begin{itemize}
@@ -184,7 +216,6 @@ Each test was run with the server and client on the same machine. The \emph{Resu
 \item Whole files are sent. Splitting files into chunks and sending only changed chunks would save bandwidth on large files.
 \item The index is in memory, so it is lost when the server restarts.
 \item There is no encryption or authentication.
-\item File renames are seen as a delete followed by a create.
 \end{itemize}
 
 \section{Conclusion}
