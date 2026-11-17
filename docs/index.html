@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Directory Synchronizer · CSE 302 Project 4</title>
+<style>
+:root{--bg:#f3f5f7;--card:#fff;--ink:#1c2733;--mute:#5d6b78;--line:#d5dce2;--acc:#0b6e6e;--bad:#b3412e;--ok:#2f7d32}
+@media (prefers-color-scheme:dark){:root{--bg:#12181e;--card:#1b242c;--ink:#e6ecf1;--mute:#9aa8b4;--line:#2d3944;--acc:#4fc3c3;--bad:#ef8a76;--ok:#7bc67e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,"Segoe UI",sans-serif}
+main{max-width:920px;margin:0 auto;padding:32px 20px 64px}
+h1{font:700 2rem/1.2 Georgia,serif;margin:0 0 8px}
+h2{font:700 1.3rem Georgia,serif;margin:40px 0 12px}
+p{max-width:70ch}
+.sub{color:var(--mute)}
+.panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:640px){.panels{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:14px;min-height:200px}
+.panel h3{margin:0 0 10px;font-size:1rem}
+.file{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-family:ui-monospace,Consolas,monospace;font-size:.9rem}
+.file span.n{flex:1;overflow-wrap:anywhere}
+.file small{color:var(--mute)}
+.empty{color:var(--mute);font-size:.9rem}
+button{font:inherit;font-size:.85rem;padding:4px 10px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:4px;cursor:pointer}
+button:hover{border-color:var(--acc)}
+button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button.go{background:var(--acc);color:#fff;border-color:var(--acc);font-size:1rem;padding:8px 22px}
+.bar{display:flex;gap:10px;align-items:center;margin:14px 0;flex-wrap:wrap}
+#log{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px;font:.85rem/1.7 ui-monospace,Consolas,monospace;max-height:220px;overflow:auto}
+.up{color:var(--acc)}.down{color:var(--ok)}.del{color:var(--mute)}.conf{color:var(--bad)}
+pre{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px;overflow-x:auto;font-size:.85rem}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+td,th{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--card)}
+.tbl{overflow-x:auto}
+a{color:var(--acc)}
+</style>
+</head>
+<body>
+<main>
+<h1>Repository / Directory Synchronizer</h1>
+<p class="sub">CSE 302 Operating Systems · Group 7 · Project ID 4 · SRM University-AP</p>
+<p>A client-server application that watches a local folder and keeps a remote folder identical to it, in the way Dropbox does. The client detects file changes, hashes the content, and sends only what changed. The multi-threaded server stores the files and keeps an index of them.</p>
+<p><a href="https://github.com/AP2411001190/dir-synchronizer">Source code on GitHub</a></p>
+
+<h2>Try the sync algorithm</h2>
+<p>Add, edit, or delete files on either side, then press Sync. Edit the same file on both sides to see a conflict: both versions are kept.</p>
+<div class="panels">
+  <div class="panel"><h3>Local folder</h3><div id="L"></div><div class="bar"><button onclick="add('L')">Add file</button></div></div>
+  <div class="panel"><h3>Remote folder</h3><div id="R"></div><div class="bar"><button onclick="add('R')">Add file</button></div></div>
+</div>
+<div class="bar"><button class="go" onclick="sync()">Sync</button><button onclick="reset()">Reset</button><button onclick="exportLog()">Download log (JSON)</button></div>
+<div id="log" aria-live="polite"></div>
+
+<h2>How it works</h2>
+<pre>Client                                           Server
+┌─────────────┐  event   ┌──────────┐  TCP   ┌───────────────┐
+│ Watcher     │ ───────► │  Queue   │ ─────► │ Thread pool   │
+│ (producer)  │          │ (blocks) │        │ (8 workers)   │
+└─────────────┘          └────┬─────┘        └──────┬────────┘
+                              │ consumer            │ mutex
+                         ┌────▼─────┐        ┌──────▼────────┐
+                         │ Uploader │        │ Index + files │
+                         │ SHA-256  │        │ remote_store/ │
+                         └──────────┘        └───────────────┘</pre>
+<ol>
+<li>The watcher thread sees a create, modify, or delete event and puts it on a queue.</li>
+<li>The uploader thread takes events from the queue, computes the SHA-256 hash, and skips the upload if the hash matches the last synced one.</li>
+<li>The server hands each connection to a worker thread. The worker locks the shared index, writes the file, and updates the hash.</li>
+<li>If the connection fails, the client retries with exponential backoff.</li>
+</ol>
+
+<h2>Operating system concepts used</h2>
+<div class="tbl"><table>
+<tr><th>Concept</th><th>Where it appears</th></tr>
+<tr><td>Threads</td><td>Watcher, uploader, and server worker pool</td></tr>
+<tr><td>Mutual exclusion (mutex)</td><td>Lock around the server's shared index</td></tr>
+<tr><td>Producer-consumer</td><td>Blocking queue between watcher and uploader, with no busy-waiting</td></tr>
+<tr><td>Inter-process communication</td><td>TCP sockets between client and server</td></tr>
+<tr><td>File system</td><td>Metadata, directory traversal, and path validation</td></tr>
+</table></div>
+
+<h2>Run it yourself</h2>
+<pre>pip install watchdog
+python src/server.py
+python src/client.py ./my_folder</pre>
+<p class="sub">Group 7 members: V. Preetham, K. Aadarsh, A. Akhil, M. Jathin, M. Sasikanth, T. Jaideep.</p>
+</main>
+
+<script>
+var S;
+function reset(){S={L:{},R:{},B:{},n:0,log:[]};
+  S.L["notes.txt"]="hello";S.R["notes.txt"]="hello";S.B["notes.txt"]="hello";
+  S.L["report.tex"]="v1";S.R["report.tex"]="v1";S.B["report.tex"]="v1";
+  S.log=[];say("Ready. notes.txt and report.tex are already in sync.","del");draw();}
+function say(t,c){var s=new Date().toLocaleTimeString();S.log.push({time:s,type:c,msg:t});
+  var d=document.getElementById("log");d.innerHTML=S.log.map(function(e){return '<div class="'+e.type+'">'+e.time+'  '+esc(e.msg)+'</div>'}).join("");d.scrollTop=d.scrollHeight;}
+function esc(s){return String(s).replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c]})}
+function draw(){["L","R"].forEach(function(k){var h="",f=Object.keys(S[k]);
+  if(!f.length)h='<div class="empty">No files yet. Add one.</div>';
+  f.forEach(function(n){h+='<div class="file"><span class="n">'+esc(n)+' <small>= '+esc(S[k][n])+'</small></span><button onclick="edit(\''+k+'\',this.dataset.n)" data-n="'+esc(n)+'">Edit</button><button onclick="del(\''+k+'\',this.dataset.n)" data-n="'+esc(n)+'">Delete</button></div>'});
+  document.getElementById(k).innerHTML=h;});}
+function add(k){S.n++;var n="file"+S.n+".txt";S[k][n]="new";say("Added "+n+" on "+(k=="L"?"local":"remote"),"del");draw();}
+function edit(k,n){S[k][n]=(S[k][n]||"")+"+";say("Edited "+n+" on "+(k=="L"?"local":"remote"),"del");draw();}
+function del(k,n){delete S[k][n];say("Deleted "+n+" on "+(k=="L"?"local":"remote"),"del");draw();}
+function sync(){var names={};[S.L,S.R,S.B].forEach(function(o){Object.keys(o).forEach(function(n){names[n]=1})});var did=false;
+  Object.keys(names).forEach(function(n){var l=S.L[n],r=S.R[n],b=S.B[n];
+    var lc=l!==b,rc=r!==b;
+    if(!lc&&!rc)return;did=true;
+    if(lc&&rc&&l!==r){
+      if(l===undefined||r===undefined){ if(l===undefined){S.L[n]=r;} else {S.R[n]=l;} S.B[n]=S.L[n];say("Conflict on "+n+" (one side deleted, other edited): kept the edited copy","conf");return;}
+      var c=n.replace(/(\.[^.]*)?$/,function(e){return" (conflict)"+(e||"")});
+      S.R[c]=l;S.L[c]=l;S.B[c]=l;S.L[n]=r;S.B[n]=r;
+      say("Conflict on "+n+": remote copy kept as "+n+", local copy saved as "+c,"conf");return;}
+    if(lc){ if(l===undefined){delete S.R[n];delete S.B[n];say("Deleted "+n+" on remote","del");}
+            else{S.R[n]=l;S.B[n]=l;say("Uploaded "+n+" ("+l.length+" bytes sent)","up");}}
+    else { if(r===undefined){delete S.L[n];delete S.B[n];say("Deleted "+n+" on local","del");}
+           else{S.L[n]=r;S.B[n]=r;say("Downloaded "+n,"down");}}
+  });
+  if(!did)say("Nothing to sync. Hashes match on both sides.","del");draw();}
+function exportLog(){var a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(S.log,null,2)],{type:"application/json"}));
+  a.download="sync_log.json";a.click();}
+reset();
+</script>
+</body>
+</html>
